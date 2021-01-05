@@ -4,7 +4,7 @@ from tempfile import SpooledTemporaryFile
 
 from azure.core.exceptions import ResourceNotFoundError
 from azure.storage.blob import (
-    BlobClient, BlobSasPermissions, ContainerClient, ContentSettings,
+    BlobClient, BlobSasPermissions, ContainerClient, ContentSettings, BlobServiceClient, 
     generate_blob_sas,
 )
 from django.core.exceptions import SuspiciousOperation
@@ -170,6 +170,22 @@ class AzureStorage(BaseStorage):
             self.azure_container,
             credential=credential)
 
+    def _blob_service_client(self):
+        account_domain = "blob.core.windows.net"
+        connection_string = "{}://{}.{}".format(
+            self.azure_protocol,
+            self.account_name,
+            account_domain)
+        credential = None
+        if self.account_key:
+            credential = self.account_key
+        elif self.sas_token:
+            credential = self.sas_token
+        elif self.token_credential:
+            credential = self.token_credential
+        return BlobServiceClient(connection_string,
+            credential=credential)
+
     @property
     def client(self):
         if self._client is None:
@@ -262,13 +278,24 @@ class AzureStorage(BaseStorage):
 
         credential = None
         if expire:
-            sas_token = generate_blob_sas(
-                self.account_name,
-                self.azure_container,
-                name,
-                account_key=self.account_key,
-                permission=BlobSasPermissions(read=True),
-                expiry=self._expire_at(expire))
+            if self.account_key is None:
+                user_delegation_key = self._blob_service_client().get_user_delegation_key(key_start_time=datetime.utcnow(),
+                    key_expiry_time=self._expire_at(expire))
+                sas_token = generate_blob_sas(
+                    self.account_name,
+                    self.azure_container,
+                    name,
+                    user_delegation_key=user_delegation_key,
+                    permission=BlobSasPermissions(read=True),
+                    expiry=self._expire_at(expire))
+            else:
+                sas_token = generate_blob_sas(
+                    self.account_name,
+                    self.azure_container,
+                    name,
+                    account_key=self.account_key,
+                    permission=BlobSasPermissions(read=True),
+                    expiry=self._expire_at(expire))
             credential = sas_token
 
         container_blob_url = self.client.get_blob_client(
